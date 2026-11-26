@@ -1,0 +1,9 @@
+assets/*.bin
+assets/*.part
+assets/*.safetensors
+assets/*.json
+assets/*.txt
+src/*.o
+tests/*.o
+*.exe
+build/
