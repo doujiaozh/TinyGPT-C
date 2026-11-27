@@ -7,3 +7,4 @@ src/*.o
 tests/*.o
 *.exe
 build/
+zos/build/

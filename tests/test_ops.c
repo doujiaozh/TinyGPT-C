@@ -64,12 +64,23 @@ static void test_gelu(void) {
     check("gelu_one", close_enough(x[1], 0.841192f, 1e-4f));
 }
 
+static void test_f16(void) {
+    float a[3] = {1.0f, 2.0f, 3.0f};
+    uint16_t b[6] = {0x3C00, 0x0000, 0x0000, 0x0000, 0x3C00, 0x0000};
+    float c[2] = {0.0f, 0.0f};
+    tgpt_matmul_f16(a, b, c, 1, 3, 2);
+    check("f16_matmul", close_enough(c[0], 1.0f, 1e-4f) && close_enough(c[1], 2.0f, 1e-4f));
+    check("f16_decode", close_enough(tgpt_half_to_float(0x3C00), 1.0f, 1e-6f) &&
+                            close_enough(tgpt_half_to_float(0xC000), -2.0f, 1e-6f));
+}
+
 int main(void) {
     test_matmul();
     test_matmul_nt();
     test_softmax();
     test_layernorm();
     test_gelu();
+    test_f16();
     if (failures == 0) {
         printf("all operator tests passed\n");
         return 0;

@@ -1,9 +1,13 @@
 #include "tinygpt.h"
 
+#include <omp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static void print_usage(const char *program) {
     printf("usage: %s [options]\n", program);
@@ -21,6 +25,11 @@ static void print_usage(const char *program) {
 }
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    if (getenv("TINYGPT_NO_HIGH_PRIORITY") == NULL) {
+        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    }
+#endif
     const char *model_path = "assets/model.bin";
     const char *vocab_path = "assets/vocab.json";
     const char *merges_path = "assets/merges.txt";
@@ -129,7 +138,7 @@ int main(int argc, char **argv) {
     printf("prompt: %s\n", prompt);
     printf("prompt tokens: %d\n", prompt_tokens);
     tgpt_reset_cache(&model);
-    clock_t start = clock();
+    double start = omp_get_wtime();
     for (int i = 0; i < prompt_tokens; i++) {
         if (!tgpt_forward(&model, ids[i], i)) {
             fprintf(stderr, "error: forward pass failed\n");
@@ -159,8 +168,8 @@ int main(int argc, char **argv) {
             break;
         }
     }
-    clock_t finish = clock();
-    double elapsed = (double)(finish - start) / (double)CLOCKS_PER_SEC;
+    double finish = omp_get_wtime();
+    double elapsed = finish - start;
     int total = prompt_tokens + produced;
     size_t output_capacity = (size_t)total * (size_t)(tokenizer.max_token_len > 0 ? tokenizer.max_token_len : 8) + 1;
     char *output = (char *)malloc(output_capacity);

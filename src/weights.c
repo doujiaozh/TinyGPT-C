@@ -1,6 +1,7 @@
 #include "tinygpt.h"
 
 #include <errno.h>
+#include <immintrin.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,7 +31,53 @@ static int read_u64(FILE *file, uint64_t *value) {
     return 1;
 }
 
-static int resolve_tensor(TGPTModel *model, const char *name, float ***slot, uint32_t *ndim, uint64_t *d0, uint64_t *d1) {
+static int is_half_tensor(const char *name) {
+    if (strcmp(name, "wte.weight") == 0) {
+        return 1;
+    }
+    if (strstr(name, ".attn.") && strstr(name, ".weight")) {
+        return 1;
+    }
+    if (strstr(name, ".mlp.") && strstr(name, ".weight")) {
+        return 1;
+    }
+    return 0;
+}
+
+static uint16_t float_to_half(float value) {
+    __m128 input = _mm_set_ss(value);
+    __m128i half = _mm_cvtps_ph(input, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    return (uint16_t)_mm_extract_epi16(half, 0);
+}
+
+static void convert_f32_to_f16(const float *source, uint16_t *destination, uint64_t count) {
+    uint64_t i = 0;
+    for (; i + 8 <= count; i += 8) {
+        __m256 values = _mm256_loadu_ps(source + i);
+        __m128i half = _mm256_cvtps_ph(values, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+        _mm_storeu_si128((__m128i *)(destination + i), half);
+    }
+    for (; i < count; i++) {
+        destination[i] = float_to_half(source[i]);
+    }
+}
+
+static void transpose_f32_to_f16(const float *source, uint16_t *destination, int rows, int columns) {
+    for (int i0 = 0; i0 < rows; i0 += 32) {
+        int i1 = i0 + 32 < rows ? i0 + 32 : rows;
+        for (int j0 = 0; j0 < columns; j0 += 32) {
+            int j1 = j0 + 32 < columns ? j0 + 32 : columns;
+            for (int i = i0; i < i1; i++) {
+                const float *row = source + (size_t)i * columns;
+                for (int j = j0; j < j1; j++) {
+                    destination[(size_t)j * rows + i] = float_to_half(row[j]);
+                }
+            }
+        }
+    }
+}
+
+static int resolve_tensor(TGPTModel *model, const char *name, void **slot, uint32_t *ndim, uint64_t *d0, uint64_t *d1) {
     const TGPTConfig *cfg = &model->cfg;
     if (strcmp(name, "wte.weight") == 0) {
         *slot = &model->wte;
@@ -291,7 +338,7 @@ int tgpt_load_model(TGPTModel *model, const char *path) {
             tgpt_free_model(model);
             return 0;
         }
-        float **slot = NULL;
+        void *slot = NULL;
         uint32_t expected_ndim = 0;
         uint64_t expected0 = 0;
         uint64_t expected1 = 0;
@@ -311,7 +358,7 @@ int tgpt_load_model(TGPTModel *model, const char *path) {
             tgpt_free_model(model);
             return 0;
         }
-        if (!slot || *slot) {
+        if (!slot || *(void **)slot) {
             fprintf(stderr, "error: unresolved or duplicate tensor slot for %s\n", name);
             fclose(file);
             tgpt_free_model(model);
@@ -327,21 +374,54 @@ int tgpt_load_model(TGPTModel *model, const char *path) {
             tgpt_free_model(model);
             return 0;
         }
-        float *data = (float *)malloc((size_t)nbytes);
-        if (!data) {
-            fprintf(stderr, "error: out of memory for %s\n", name);
-            fclose(file);
-            tgpt_free_model(model);
-            return 0;
+        int half = is_half_tensor(name);
+        if (half) {
+            float *source = (float *)malloc((size_t)nbytes);
+            if (!source) {
+                fprintf(stderr, "error: out of memory for %s\n", name);
+                fclose(file);
+                tgpt_free_model(model);
+                return 0;
+            }
+            if (!read_bytes(file, source, (size_t)nbytes)) {
+                fprintf(stderr, "error: truncated tensor data for %s\n", name);
+                free(source);
+                fclose(file);
+                tgpt_free_model(model);
+                return 0;
+            }
+            uint16_t *destination = (uint16_t *)malloc((size_t)count * sizeof(uint16_t));
+            if (!destination) {
+                fprintf(stderr, "error: out of memory for %s\n", name);
+                free(source);
+                fclose(file);
+                tgpt_free_model(model);
+                return 0;
+            }
+            if (strcmp(name, "wte.weight") == 0) {
+                convert_f32_to_f16(source, destination, count);
+            } else {
+                transpose_f32_to_f16(source, destination, (int)dims[0], (int)dims[1]);
+            }
+            free(source);
+            *(uint16_t **)slot = destination;
+        } else {
+            float *data = (float *)malloc((size_t)nbytes);
+            if (!data) {
+                fprintf(stderr, "error: out of memory for %s\n", name);
+                fclose(file);
+                tgpt_free_model(model);
+                return 0;
+            }
+            if (!read_bytes(file, data, (size_t)nbytes)) {
+                fprintf(stderr, "error: truncated tensor data for %s\n", name);
+                free(data);
+                fclose(file);
+                tgpt_free_model(model);
+                return 0;
+            }
+            *(float **)slot = data;
         }
-        if (!read_bytes(file, data, (size_t)nbytes)) {
-            fprintf(stderr, "error: truncated tensor data for %s\n", name);
-            free(data);
-            fclose(file);
-            tgpt_free_model(model);
-            return 0;
-        }
-        *slot = data;
     }
     fclose(file);
     if (!all_weights_present(model)) {
@@ -358,7 +438,7 @@ int tgpt_load_model(TGPTModel *model, const char *path) {
     model->attn = (float *)calloc(embd_count, sizeof(float));
     model->ff = (float *)calloc(inner_count, sizeof(float));
     model->logits = (float *)calloc(vocab_count, sizeof(float));
-    model->scores = (float *)calloc((size_t)ctx, sizeof(float));
+    model->scores = (float *)calloc((size_t)ctx * (size_t)heads, sizeof(float));
     size_t cache_count = (size_t)layers * (size_t)ctx * embd_count;
     model->k_cache = (float *)calloc(cache_count, sizeof(float));
     model->v_cache = (float *)calloc(cache_count, sizeof(float));

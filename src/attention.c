@@ -1,6 +1,7 @@
 #include "tinygpt.h"
 
 #include <math.h>
+#include <omp.h>
 #include <string.h>
 
 void tgpt_attention(TGPTModel *model, int layer, int pos) {
@@ -10,7 +11,7 @@ void tgpt_attention(TGPTModel *model, int layer, int pos) {
     const int ctx = model->cfg.n_ctx;
     TGPTLayer *params = &model->layers[layer];
     tgpt_layernorm(model->h, model->x, params->ln1_w, params->ln1_b, embd);
-    tgpt_matmul(model->h, params->qkv_w, model->qkv, 1, embd, 3 * embd);
+    tgpt_matmul_f16(model->h, params->qkv_w, model->qkv, 1, embd, 3 * embd);
     for (int i = 0; i < 3 * embd; i++) {
         model->qkv[i] += params->qkv_b[i];
     }
@@ -19,28 +20,31 @@ void tgpt_attention(TGPTModel *model, int layer, int pos) {
     float *value = model->qkv + 2 * embd;
     tgpt_cache_store(model, layer, pos, key, value);
     float scale = 1.0f / sqrtf((float)dim);
+    int parallel = pos >= 24 && heads > 1 && omp_get_max_threads() > 1;
+#pragma omp parallel for schedule(static) if (parallel)
     for (int head = 0; head < heads; head++) {
         const float *qh = query + head * dim;
+        float *scores = model->scores + (size_t)head * ctx;
         for (int t = 0; t <= pos; t++) {
             const float *kh = model->k_cache + (((size_t)layer * ctx + t) * embd) + head * dim;
             float dot = 0.0f;
             for (int d = 0; d < dim; d++) {
                 dot += qh[d] * kh[d];
             }
-            model->scores[t] = dot * scale;
+            scores[t] = dot * scale;
         }
-        tgpt_softmax(model->scores, pos + 1);
+        tgpt_softmax(scores, pos + 1);
         float *out = model->attn + head * dim;
         memset(out, 0, (size_t)dim * sizeof(float));
         for (int t = 0; t <= pos; t++) {
-            float weight = model->scores[t];
+            float weight = scores[t];
             const float *vh = model->v_cache + (((size_t)layer * ctx + t) * embd) + head * dim;
             for (int d = 0; d < dim; d++) {
                 out[d] += weight * vh[d];
             }
         }
     }
-    tgpt_matmul(model->attn, params->attn_proj_w, model->h, 1, embd, embd);
+    tgpt_matmul_f16(model->attn, params->attn_proj_w, model->h, 1, embd, embd);
     for (int i = 0; i < embd; i++) {
         model->x[i] += model->h[i] + params->attn_proj_b[i];
     }

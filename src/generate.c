@@ -41,7 +41,7 @@ int tgpt_forward(TGPTModel *model, int token, int pos) {
         tgpt_mlp(model, layer);
     }
     tgpt_layernorm(model->h, model->x, model->lnf_w, model->lnf_b, model->cfg.n_embd);
-    tgpt_matmul_nt(model->h, model->wte, model->logits, 1, model->cfg.n_embd, model->cfg.vocab_size);
+    tgpt_matmul_nt_f16(model->h, model->wte, model->logits, 1, model->cfg.n_embd, model->cfg.vocab_size);
     return 1;
 }
 

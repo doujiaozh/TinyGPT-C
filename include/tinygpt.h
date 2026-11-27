@@ -25,21 +25,21 @@ typedef struct {
 typedef struct {
     float *ln1_w;
     float *ln1_b;
-    float *qkv_w;
+    uint16_t *qkv_w;
     float *qkv_b;
-    float *attn_proj_w;
+    uint16_t *attn_proj_w;
     float *attn_proj_b;
     float *ln2_w;
     float *ln2_b;
-    float *fc_w;
+    uint16_t *fc_w;
     float *fc_b;
-    float *ff_proj_w;
+    uint16_t *ff_proj_w;
     float *ff_proj_b;
 } TGPTLayer;
 
 typedef struct {
     TGPTConfig cfg;
-    float *wte;
+    uint16_t *wte;
     float *wpe;
     float *lnf_w;
     float *lnf_b;
@@ -81,6 +81,9 @@ void tgpt_reset_cache(TGPTModel *model);
 
 void tgpt_matmul(const float *a, const float *b, float *c, int m, int k, int n);
 void tgpt_matmul_nt(const float *a, const float *b, float *c, int m, int k, int n);
+void tgpt_matmul_f16(const float *a, const uint16_t *b, float *c, int m, int k, int n);
+void tgpt_matmul_nt_f16(const float *a, const uint16_t *b, float *c, int m, int k, int n);
+float tgpt_half_to_float(uint16_t value);
 void tgpt_softmax(float *x, int n);
 void tgpt_layernorm(float *out, const float *x, const float *w, const float *b, int n);
 void tgpt_gelu(float *x, int n);
